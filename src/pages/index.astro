@@ -1,0 +1,42 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import { Dashboard } from '../components/dashboard/Dashboard';
+import { buildDailyTasks } from '../lib/tasks';
+import { todayISO } from '../lib/dates';
+
+const supabase = Astro.locals.supabase;
+const today = todayISO();
+
+const [dailyRes, weightRes, gymRes, cardioRes, mealsRes] = await Promise.all([
+  supabase.from('daily_logs').select('*').eq('log_date', today).maybeSingle(),
+  supabase.from('weight_logs').select('*').eq('log_date', today).maybeSingle(),
+  supabase.from('workout_sessions').select('id').eq('session_date', today).maybeSingle(),
+  supabase
+    .from('cardio_sessions')
+    .select('id, type')
+    .eq('session_date', today)
+    .neq('type', 'daily_steps'),
+  supabase.from('day_meal_items').select('meal_type').eq('log_date', today),
+]);
+
+const dailyLog = dailyRes.data;
+const hasWeight = Boolean(weightRes.data);
+const hasGym = Boolean(gymRes.data);
+const hasCardio = (cardioRes.data ?? []).length > 0;
+const todayMeals = mealsRes.data ?? [];
+
+const tasks = buildDailyTasks(dailyLog, todayMeals, hasWeight, hasGym, hasCardio);
+
+const status = {
+  weight: weightRes.data ? Number(weightRes.data.weight_kg) : null,
+  waterGlasses: dailyLog?.water_glasses ?? 0,
+  waterBottles: dailyLog?.water_bottles ?? 0,
+  hasGym,
+  hasCardio,
+  stepsCount: dailyLog?.steps_count ?? 0,
+};
+---
+
+<AppLayout title="Inicio — Mi Rutina" currentPath="/">
+  <Dashboard tasks={tasks} status={status} client:load />
+</AppLayout>

@@ -1,0 +1,8 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import { StepsPage } from '../components/steps/StepsPage';
+---
+
+<AppLayout title="Pasos — Mi Rutina" currentPath="/pasos">
+  <StepsPage client:load />
+</AppLayout>

@@ -1,0 +1,31 @@
+---
+import '../styles/global.css';
+import { LoginForm } from '../components/auth/LoginForm';
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Login — Mi Rutina</title>
+  </head>
+  <body class="min-h-dvh flex items-center justify-center p-4 bg-background">
+    <div class="w-full max-w-sm space-y-6 animate-slide-up">
+      <div class="text-center space-y-2">
+        <h1 class="text-2xl font-semibold tracking-tight text-foreground">
+          Mi Rutina
+        </h1>
+        <p class="text-muted-foreground text-sm">Tu diario fitness personal</p>
+      </div>
+      <div class="rounded-lg border border-border bg-card text-card-foreground shadow-sm p-6">
+        <LoginForm client:load />
+      </div>
+    </div>
+  </body>
+</html>

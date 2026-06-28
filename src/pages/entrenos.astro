@@ -1,0 +1,8 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import { CardioPage } from '../components/cardio/CardioPage';
+---
+
+<AppLayout title="Entrenos — Mi Rutina" currentPath="/entrenos">
+  <CardioPage client:load />
+</AppLayout>

@@ -1,0 +1,10 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import { DietPage } from '../components/diet/DietPage';
+
+const meal = Astro.url.searchParams.get('meal') ?? undefined;
+---
+
+<AppLayout title="Dieta — Mi Rutina" currentPath="/dieta">
+  <DietPage initialMeal={meal} client:load />
+</AppLayout>
