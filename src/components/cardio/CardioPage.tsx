@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { subDays } from 'date-fns';
 import { createSupabaseBrowserClient } from '../../lib/supabase/client';
-import { todayISO, formatDate, formatPace, formatDuration } from '../../lib/dates';
+import { todayISO, formatDate, formatPace, formatDuration, getThreeDayWindow, toISODate } from '../../lib/dates';
+import type { PlanDragPayload } from '../../lib/schedule';
 import {
   loadingClass,
   pageSubtitleClass,
@@ -13,24 +15,37 @@ import { CARDIO_WORKOUT_LABELS } from '../../lib/tasks';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Modal } from '../ui/Modal';
 import { LineChart } from '../charts/LineChart';
-import type { CardioSession } from '../../types/database';
+import { ThreeDayPlanGrid, type DayPlanEntry } from '../schedule/ThreeDayPlanGrid';
+import { TemplateChipLibrary } from '../schedule/TemplateChipLibrary';
+import type { CardioSession, CardioDayPlan } from '../../types/database';
 import { startOfWeek, parseISO, format } from 'date-fns';
 import { es } from 'date-fns/locale';
 
 type CardioWorkoutType = keyof typeof CARDIO_WORKOUT_LABELS;
-type Tab = 'log' | 'history' | 'charts';
+type Tab = 'schedule' | 'log' | 'history' | 'charts';
 
 // TODO: integración Strava OAuth + webhook de actividades
 // Conectar aquí el flujo OAuth y el handler de webhook para upsert con source='strava'
 
+const CARDIO_TYPES = Object.keys(CARDIO_WORKOUT_LABELS) as CardioWorkoutType[];
+
 export function CardioPage() {
-  const [tab, setTab] = useState<Tab>('log');
+  const [tab, setTab] = useState<Tab>('schedule');
+  const [viewStart, setViewStart] = useState(() => subDays(new Date(), 1));
+  const [cardioPlans, setCardioPlans] = useState<CardioDayPlan[]>([]);
+  const [completedDates, setCompletedDates] = useState<Set<string>>(new Set());
+
   const [type, setType] = useState<CardioWorkoutType>('long_run');
+  const [sessionDate, setSessionDate] = useState(todayISO());
   const [sessions, setSessions] = useState<CardioSession[]>([]);
   const [filterType, setFilterType] = useState<CardioWorkoutType | 'all'>('all');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const [quickAddDate, setQuickAddDate] = useState<string | null>(null);
+  const [quickAddType, setQuickAddType] = useState<CardioWorkoutType>('long_run');
 
   const [longRun, setLongRun] = useState({ distance_km: '', duration_min: '' });
   const [intervals, setIntervals] = useState({
@@ -43,11 +58,48 @@ export function CardioPage() {
   const [yoyo, setYoyo] = useState({ level: '', shuttles: '' });
 
   const supabase = createSupabaseBrowserClient();
-  const today = todayISO();
+
+  const plansByDate = useMemo(() => {
+    const map = new Map<string, DayPlanEntry>();
+    for (const plan of cardioPlans) {
+      map.set(plan.plan_date, {
+        id: plan.id,
+        plan_date: plan.plan_date,
+        name: plan.name,
+        completed: completedDates.has(plan.plan_date),
+      });
+    }
+    return map;
+  }, [cardioPlans, completedDates]);
+
+  const cardioChips = useMemo(
+    () =>
+      CARDIO_TYPES.map((t) => ({
+        id: t,
+        label: CARDIO_WORKOUT_LABELS[t],
+        dragPayload: {
+          kind: 'cardio-template' as const,
+          plannedType: t,
+          name: CARDIO_WORKOUT_LABELS[t],
+        },
+      })),
+    [],
+  );
 
   useEffect(() => {
     loadSessions();
   }, []);
+
+  useEffect(() => {
+    loadSchedule();
+  }, [viewStart]);
+
+  useEffect(() => {
+    if (tab === 'log') {
+      const plan = cardioPlans.find((p) => p.plan_date === sessionDate);
+      if (plan) setType(plan.planned_type as CardioWorkoutType);
+    }
+  }, [tab, sessionDate, cardioPlans]);
 
   async function loadSessions() {
     setLoading(true);
@@ -58,7 +110,84 @@ export function CardioPage() {
       .order('session_date', { ascending: false })
       .limit(100);
     setSessions(data ?? []);
+    await loadSchedule();
     setLoading(false);
+  }
+
+  async function loadSchedule() {
+    const days = getThreeDayWindow(viewStart);
+    const from = toISODate(days[0]);
+    const to = toISODate(days[2]);
+
+    const [plansRes, sessionsRes] = await Promise.all([
+      supabase.from('cardio_day_plans').select('*').gte('plan_date', from).lte('plan_date', to),
+      supabase
+        .from('cardio_sessions')
+        .select('session_date')
+        .neq('type', 'daily_steps')
+        .gte('session_date', from)
+        .lte('session_date', to),
+    ]);
+
+    setCardioPlans(plansRes.data ?? []);
+    setCompletedDates(new Set((sessionsRes.data ?? []).map((s) => s.session_date)));
+  }
+
+  async function upsertPlan(date: string, plannedType: CardioWorkoutType, name: string) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const existing = cardioPlans.find((p) => p.plan_date === date);
+    if (existing) {
+      await supabase
+        .from('cardio_day_plans')
+        .update({ planned_type: plannedType, name })
+        .eq('id', existing.id);
+    } else {
+      await supabase.from('cardio_day_plans').insert({
+        user_id: user.id,
+        plan_date: date,
+        planned_type: plannedType,
+        name,
+      });
+    }
+    await loadSchedule();
+  }
+
+  async function movePlan(planId: string, toDate: string) {
+    const moving = cardioPlans.find((p) => p.id === planId);
+    if (!moving || moving.plan_date === toDate) return;
+
+    const atTarget = cardioPlans.find((p) => p.plan_date === toDate);
+    if (atTarget) {
+      await supabase.from('cardio_day_plans').delete().eq('id', atTarget.id);
+    }
+    await supabase.from('cardio_day_plans').update({ plan_date: toDate }).eq('id', planId);
+    await loadSchedule();
+  }
+
+  async function handlePlanDrop(payload: PlanDragPayload, date: string) {
+    if (payload.kind === 'cardio-template') {
+      await upsertPlan(date, payload.plannedType as CardioWorkoutType, payload.name);
+    } else if (payload.kind === 'plan') {
+      await movePlan(payload.planId, date);
+    }
+  }
+
+  async function removePlan(planId: string) {
+    await supabase.from('cardio_day_plans').delete().eq('id', planId);
+    await loadSchedule();
+  }
+
+  function openLogDay(date: string) {
+    setSessionDate(date);
+    setTab('log');
+  }
+
+  async function confirmQuickAdd() {
+    if (!quickAddDate) return;
+    await upsertPlan(quickAddDate, quickAddType, CARDIO_WORKOUT_LABELS[quickAddType]);
+    setQuickAddDate(null);
   }
 
   async function handleSave() {
@@ -93,7 +222,7 @@ export function CardioPage() {
 
     await supabase.from('cardio_sessions').insert({
       user_id: user.id,
-      session_date: today,
+      session_date: sessionDate,
       type,
       source: 'manual',
       details,
@@ -107,8 +236,10 @@ export function CardioPage() {
     filterType === 'all' ? sessions : sessions.filter((s) => s.type === filterType);
 
   const weeklyDistance = computeWeeklyDistance(sessions);
+  const isTodaySession = sessionDate === todayISO();
 
   const tabs: { id: Tab; label: string }[] = [
+    { id: 'schedule', label: 'Horario' },
     { id: 'log', label: 'Registrar' },
     { id: 'history', label: 'Historial' },
     { id: 'charts', label: 'Gráficas' },
@@ -120,7 +251,7 @@ export function CardioPage() {
     <div className="space-y-6 animate-slide-up">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">🏃 Entrenos cardio</h1>
-        <p className={pageSubtitleClass}>Running, series e intervalos</p>
+        <p className={pageSubtitleClass}>Planifica y registra running, series e intervalos</p>
       </header>
 
       <div className="flex gap-1 overflow-x-auto pb-1 p-1 bg-muted rounded-lg w-fit max-w-full">
@@ -139,8 +270,46 @@ export function CardioPage() {
         ))}
       </div>
 
+      {tab === 'schedule' && (
+        <div className="space-y-4">
+          <TemplateChipLibrary
+            title="Tipos de entreno"
+            hint="Arrastra un tipo al día que quieras entrenar"
+            chips={cardioChips}
+          />
+          <ThreeDayPlanGrid
+            viewStart={viewStart}
+            onViewStartChange={setViewStart}
+            plansByDate={plansByDate}
+            slotLabel="Cardio"
+            emptyHint="Arrastra un entreno aquí"
+            onDrop={handlePlanDrop}
+            onRemove={removePlan}
+            onQuickAdd={(date) => {
+              setQuickAddDate(date);
+              setQuickAddType('long_run');
+            }}
+            onOpenDay={openLogDay}
+          />
+        </div>
+      )}
+
       {tab === 'log' && (
         <div className="space-y-4">
+          <Card className="!py-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-xs text-muted-foreground">Fecha del entreno</p>
+                <p className="font-medium">{formatDate(sessionDate)}</p>
+              </div>
+              {!isTodaySession && (
+                <Button variant="outline" size="sm" onClick={() => setSessionDate(todayISO())}>
+                  Ir a hoy
+                </Button>
+              )}
+            </div>
+          </Card>
+
           <Card>
             <label className="block text-sm font-medium text-foreground mb-2">Tipo de entreno</label>
             <select
@@ -201,16 +370,22 @@ export function CardioPage() {
           {filtered.length === 0 && <p className="text-muted-foreground text-center py-8 text-sm">Sin entrenos</p>}
           {filtered.map((s) => (
             <Card key={s.id} className="!py-4">
-              <div className="flex justify-between items-start gap-3">
-                <div>
-                  <div className="font-medium">{CARDIO_WORKOUT_LABELS[s.type as CardioWorkoutType]}</div>
-                  <div className="text-sm text-muted-foreground">{formatDate(s.session_date)}</div>
+              <button
+                type="button"
+                className="w-full text-left"
+                onClick={() => openLogDay(s.session_date)}
+              >
+                <div className="flex justify-between items-start gap-3">
+                  <div>
+                    <div className="font-medium">{CARDIO_WORKOUT_LABELS[s.type as CardioWorkoutType]}</div>
+                    <div className="text-sm text-muted-foreground">{formatDate(s.session_date)}</div>
+                  </div>
+                  {s.source === 'strava' && (
+                    <span className="text-xs bg-secondary text-secondary-foreground border border-border px-2 py-0.5 rounded-full">Strava</span>
+                  )}
                 </div>
-                {s.source === 'strava' && (
-                  <span className="text-xs bg-secondary text-secondary-foreground border border-border px-2 py-0.5 rounded-full">Strava</span>
-                )}
-              </div>
-              <p className="text-sm text-muted-foreground mt-2">{formatSessionSummary(s)}</p>
+                <p className="text-sm text-muted-foreground mt-2">{formatSessionSummary(s)}</p>
+              </button>
             </Card>
           ))}
         </div>
@@ -222,6 +397,28 @@ export function CardioPage() {
           <LineChart data={weeklyDistance} unit=" km" />
         </Card>
       )}
+
+      <Modal
+        open={Boolean(quickAddDate)}
+        onClose={() => setQuickAddDate(null)}
+        title={quickAddDate ? `Planificar ${formatDate(quickAddDate)}` : 'Planificar'}
+      >
+        <div className="space-y-4">
+          <label className="block text-sm font-medium text-foreground">Tipo de entreno</label>
+          <select
+            value={quickAddType}
+            onChange={(e) => setQuickAddType(e.target.value as CardioWorkoutType)}
+            className={selectClass}
+          >
+            {Object.entries(CARDIO_WORKOUT_LABELS).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+          <Button size="lg" className="w-full" onClick={confirmQuickAdd}>
+            Añadir al horario
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { subDays } from 'date-fns';
 import { createSupabaseBrowserClient } from '../../lib/supabase/client';
-import { todayISO, formatDate } from '../../lib/dates';
+import { todayISO, formatDate, getThreeDayWindow, toISODate } from '../../lib/dates';
+import type { PlanDragPayload } from '../../lib/schedule';
 import {
   inlineInputClass,
   loadingClass,
@@ -15,15 +17,15 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Modal } from '../ui/Modal';
 import { LineChart } from '../charts/LineChart';
+import { ThreeDayPlanGrid, type DayPlanEntry } from '../schedule/ThreeDayPlanGrid';
+import { TemplateChipLibrary } from '../schedule/TemplateChipLibrary';
 import type {
   RoutineTemplate,
-  RoutineExercise,
   WorkoutSession,
-  WorkoutExercise,
-  WorkoutSet,
+  GymDayPlan,
 } from '../../types/database';
 
-type Tab = 'workout' | 'templates' | 'history' | 'progress';
+type Tab = 'schedule' | 'workout' | 'templates' | 'history' | 'progress';
 
 interface SetInput {
   set_number: number;
@@ -38,11 +40,15 @@ interface ExerciseInput {
 }
 
 export function GymPage() {
-  const [tab, setTab] = useState<Tab>('workout');
+  const [tab, setTab] = useState<Tab>('schedule');
+  const [viewStart, setViewStart] = useState(() => subDays(new Date(), 1));
+  const [gymPlans, setGymPlans] = useState<GymDayPlan[]>([]);
+  const [completedDates, setCompletedDates] = useState<Set<string>>(new Set());
+
   const [templates, setTemplates] = useState<RoutineTemplate[]>([]);
-  const [exercises, setExercises] = useState<RoutineExercise[]>([]);
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
-  const [todaySession, setTodaySession] = useState<WorkoutSession | null>(null);
+  const [workoutDate, setWorkoutDate] = useState(todayISO());
+  const [activeSession, setActiveSession] = useState<WorkoutSession | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [workoutExercises, setWorkoutExercises] = useState<ExerciseInput[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,42 +61,109 @@ export function GymPage() {
   >([{ name: '', target_sets: 3, target_reps: 10 }]);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
 
+  const [quickAddDate, setQuickAddDate] = useState<string | null>(null);
+  const [quickAddTemplateId, setQuickAddTemplateId] = useState('');
+
   const [progressExercise, setProgressExercise] = useState('');
   const [progressData, setProgressData] = useState<{ label: string; value: number }[]>([]);
   const [progressMode, setProgressMode] = useState<'max_weight' | 'volume'>('max_weight');
 
   const supabase = createSupabaseBrowserClient();
-  const today = todayISO();
+
+  const plansByDate = useMemo(() => {
+    const map = new Map<string, DayPlanEntry>();
+    for (const plan of gymPlans) {
+      map.set(plan.plan_date, {
+        id: plan.id,
+        plan_date: plan.plan_date,
+        name: plan.name,
+        completed: completedDates.has(plan.plan_date),
+      });
+    }
+    return map;
+  }, [gymPlans, completedDates]);
+
+  const templateChips = useMemo(
+    () =>
+      templates.map((t) => ({
+        id: t.id,
+        label: t.name,
+        dragPayload: { kind: 'gym-template' as const, templateId: t.id, name: t.name },
+      })),
+    [templates],
+  );
 
   useEffect(() => {
-    loadAll();
+    loadBase();
   }, []);
 
   useEffect(() => {
-    if (selectedTemplateId) {
+    loadSchedule();
+  }, [viewStart]);
+
+  useEffect(() => {
+    if (tab === 'workout') {
+      loadWorkoutForDate(workoutDate);
+    }
+  }, [tab, workoutDate]);
+
+  useEffect(() => {
+    if (selectedTemplateId && !activeSession) {
       loadTemplateExercises(selectedTemplateId);
     }
-  }, [selectedTemplateId]);
+  }, [selectedTemplateId, activeSession]);
 
   useEffect(() => {
     if (progressExercise) loadProgress(progressExercise);
   }, [progressExercise, progressMode]);
 
-  async function loadAll() {
+  async function loadBase() {
     setLoading(true);
-    const [tplRes, sessRes, todayRes] = await Promise.all([
+    const [tplRes, sessRes] = await Promise.all([
       supabase.from('routine_templates').select('*').order('name'),
       supabase.from('workout_sessions').select('*').order('session_date', { ascending: false }).limit(30),
-      supabase.from('workout_sessions').select('*').eq('session_date', today).maybeSingle(),
     ]);
     setTemplates(tplRes.data ?? []);
     setSessions(sessRes.data ?? []);
-    setTodaySession(todayRes.data ?? null);
-
-    if (todayRes.data) {
-      await loadTodayWorkout(todayRes.data.id);
-    }
+    await loadSchedule();
     setLoading(false);
+  }
+
+  async function loadSchedule() {
+    const days = getThreeDayWindow(viewStart);
+    const from = toISODate(days[0]);
+    const to = toISODate(days[2]);
+
+    const [plansRes, sessionsRes] = await Promise.all([
+      supabase.from('gym_day_plans').select('*').gte('plan_date', from).lte('plan_date', to),
+      supabase.from('workout_sessions').select('session_date').gte('session_date', from).lte('session_date', to),
+    ]);
+
+    setGymPlans(plansRes.data ?? []);
+    setCompletedDates(new Set((sessionsRes.data ?? []).map((s) => s.session_date)));
+  }
+
+  async function loadWorkoutForDate(date: string) {
+    const [{ data: session }, { data: plan }] = await Promise.all([
+      supabase.from('workout_sessions').select('*').eq('session_date', date).maybeSingle(),
+      supabase.from('gym_day_plans').select('*').eq('plan_date', date).maybeSingle(),
+    ]);
+
+    setActiveSession(session ?? null);
+
+    if (session) {
+      await loadSessionWorkout(session.id);
+      if (session.template_id) setSelectedTemplateId(session.template_id);
+      return;
+    }
+
+    if (plan?.template_id) {
+      setSelectedTemplateId(plan.template_id);
+      await loadTemplateExercises(plan.template_id);
+    } else {
+      setSelectedTemplateId('');
+      setWorkoutExercises([]);
+    }
   }
 
   async function loadTemplateExercises(templateId: string) {
@@ -99,31 +172,31 @@ export function GymPage() {
       .select('*')
       .eq('template_id', templateId)
       .order('sort_order');
-    setExercises(data ?? []);
 
-    if (!todaySession) {
-      setWorkoutExercises(
-        (data ?? []).map((ex) => ({
-          name: ex.name,
-          routine_exercise_id: ex.id,
-          sets: Array.from({ length: ex.target_sets }, (_, i) => ({
-            set_number: i + 1,
-            reps: ex.target_reps,
-            weight_kg: 0,
-          })),
+    setWorkoutExercises(
+      (data ?? []).map((ex) => ({
+        name: ex.name,
+        routine_exercise_id: ex.id,
+        sets: Array.from({ length: ex.target_sets }, (_, i) => ({
+          set_number: i + 1,
+          reps: ex.target_reps,
+          weight_kg: 0,
         })),
-      );
-    }
+      })),
+    );
   }
 
-  async function loadTodayWorkout(sessionId: string) {
+  async function loadSessionWorkout(sessionId: string) {
     const { data: wex } = await supabase
       .from('workout_exercises')
       .select('*')
       .eq('session_id', sessionId)
       .order('sort_order');
 
-    if (!wex?.length) return;
+    if (!wex?.length) {
+      setWorkoutExercises([]);
+      return;
+    }
 
     const result: ExerciseInput[] = [];
     for (const ex of wex) {
@@ -143,7 +216,66 @@ export function GymPage() {
       });
     }
     setWorkoutExercises(result);
-    if (todaySession?.template_id) setSelectedTemplateId(todaySession.template_id);
+  }
+
+  async function upsertPlan(date: string, templateId: string | null, name: string) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const existing = gymPlans.find((p) => p.plan_date === date);
+    if (existing) {
+      await supabase
+        .from('gym_day_plans')
+        .update({ template_id: templateId, name })
+        .eq('id', existing.id);
+    } else {
+      await supabase.from('gym_day_plans').insert({
+        user_id: user.id,
+        plan_date: date,
+        template_id: templateId,
+        name,
+      });
+    }
+    await loadSchedule();
+  }
+
+  async function movePlan(planId: string, toDate: string) {
+    const moving = gymPlans.find((p) => p.id === planId);
+    if (!moving || moving.plan_date === toDate) return;
+
+    const atTarget = gymPlans.find((p) => p.plan_date === toDate);
+    if (atTarget) {
+      await supabase.from('gym_day_plans').delete().eq('id', atTarget.id);
+    }
+    await supabase.from('gym_day_plans').update({ plan_date: toDate }).eq('id', planId);
+    await loadSchedule();
+  }
+
+  async function handlePlanDrop(payload: PlanDragPayload, date: string) {
+    if (payload.kind === 'gym-template') {
+      await upsertPlan(date, payload.templateId, payload.name);
+    } else if (payload.kind === 'plan') {
+      await movePlan(payload.planId, date);
+    }
+  }
+
+  async function removePlan(planId: string) {
+    await supabase.from('gym_day_plans').delete().eq('id', planId);
+    await loadSchedule();
+  }
+
+  function openWorkoutDay(date: string) {
+    setWorkoutDate(date);
+    setTab('workout');
+  }
+
+  async function confirmQuickAdd() {
+    if (!quickAddDate) return;
+    const tpl = templates.find((t) => t.id === quickAddTemplateId);
+    const name = tpl?.name ?? 'Entreno libre';
+    await upsertPlan(quickAddDate, quickAddTemplateId || null, name);
+    setQuickAddDate(null);
+    setQuickAddTemplateId('');
   }
 
   async function saveWorkout() {
@@ -153,14 +285,14 @@ export function GymPage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    let sessionId = todaySession?.id;
+    let sessionId = activeSession?.id;
 
     if (!sessionId) {
       const { data: newSession, error } = await supabase
         .from('workout_sessions')
         .insert({
           user_id: user.id,
-          session_date: today,
+          session_date: workoutDate,
           template_id: selectedTemplateId || null,
           name: templates.find((t) => t.id === selectedTemplateId)?.name ?? 'Entreno libre',
         })
@@ -168,7 +300,7 @@ export function GymPage() {
         .single();
 
       if (error) {
-        alert('Ya tienes un entreno registrado hoy');
+        alert('Ya tienes un entreno registrado ese día');
         setSaving(false);
         return;
       }
@@ -205,7 +337,14 @@ export function GymPage() {
     }
 
     setSaving(false);
-    await loadAll();
+    const sessRes = await supabase
+      .from('workout_sessions')
+      .select('*')
+      .order('session_date', { ascending: false })
+      .limit(30);
+    setSessions(sessRes.data ?? []);
+    await loadSchedule();
+    await loadWorkoutForDate(workoutDate);
   }
 
   async function saveTemplate() {
@@ -244,13 +383,13 @@ export function GymPage() {
     setTemplateName('');
     setTemplateExercises([{ name: '', target_sets: 3, target_reps: 10 }]);
     setEditingTemplateId(null);
-    await loadAll();
+    await loadBase();
   }
 
   async function deleteTemplate(id: string) {
     if (!confirm('¿Eliminar plantilla?')) return;
     await supabase.from('routine_templates').delete().eq('id', id);
-    await loadAll();
+    await loadBase();
   }
 
   async function editTemplate(tpl: RoutineTemplate) {
@@ -336,11 +475,14 @@ export function GymPage() {
   }
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'workout', label: 'Hoy' },
+    { id: 'schedule', label: 'Horario' },
+    { id: 'workout', label: 'Registrar' },
     { id: 'templates', label: 'Plantillas' },
     { id: 'history', label: 'Historial' },
     { id: 'progress', label: 'Progreso' },
   ];
+
+  const isTodayWorkout = workoutDate === todayISO();
 
   if (loading) return <div className={loadingClass}>Cargando...</div>;
 
@@ -349,7 +491,7 @@ export function GymPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">🏋️ Gimnasio</h1>
         <p className={pageSubtitleClass}>
-          {todaySession ? 'Entreno de hoy registrado — puedes editarlo' : 'Registra tu entreno de hoy'}
+          Planifica tu semana y registra cada entreno
         </p>
       </header>
 
@@ -369,14 +511,53 @@ export function GymPage() {
         ))}
       </div>
 
+      {tab === 'schedule' && (
+        <div className="space-y-4">
+          <TemplateChipLibrary
+            title="Plantillas de rutina"
+            hint="Arrastra una plantilla al día que quieras entrenar"
+            chips={templateChips}
+            emptyMessage="Crea plantillas en la pestaña Plantillas"
+          />
+          <ThreeDayPlanGrid
+            viewStart={viewStart}
+            onViewStartChange={setViewStart}
+            plansByDate={plansByDate}
+            slotLabel="Rutina"
+            emptyHint="Arrastra una plantilla aquí"
+            onDrop={handlePlanDrop}
+            onRemove={removePlan}
+            onQuickAdd={(date) => {
+              setQuickAddDate(date);
+              setQuickAddTemplateId('');
+            }}
+            onOpenDay={openWorkoutDay}
+          />
+        </div>
+      )}
+
       {tab === 'workout' && (
         <div className="space-y-4">
+          <Card className="!py-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-xs text-muted-foreground">Fecha del entreno</p>
+                <p className="font-medium">{formatDate(workoutDate)}</p>
+              </div>
+              {!isTodayWorkout && (
+                <Button variant="outline" size="sm" onClick={() => setWorkoutDate(todayISO())}>
+                  Ir a hoy
+                </Button>
+              )}
+            </div>
+          </Card>
+
           <Card>
             <label className="block text-sm font-medium text-foreground mb-2">Plantilla</label>
             <select
               value={selectedTemplateId}
               onChange={(e) => setSelectedTemplateId(e.target.value)}
-              disabled={Boolean(todaySession)}
+              disabled={Boolean(activeSession)}
               className={selectClass}
             >
               <option value="">Entreno libre</option>
@@ -428,7 +609,7 @@ export function GymPage() {
 
           <Button variant="secondary" onClick={addExercise}>+ Ejercicio extra</Button>
           <Button size="lg" className="w-full" onClick={saveWorkout} disabled={saving}>
-            {saving ? 'Guardando...' : todaySession ? 'Actualizar entreno' : 'Guardar entreno'}
+            {saving ? 'Guardando...' : activeSession ? 'Actualizar entreno' : 'Guardar entreno'}
           </Button>
         </div>
       )}
@@ -457,10 +638,14 @@ export function GymPage() {
           {sessions.length === 0 && <p className="text-muted-foreground text-center py-8 text-sm">Sin entrenos aún</p>}
           {sessions.map((s) => (
             <Card key={s.id} className="!py-4">
-              <div>
+              <button
+                type="button"
+                className="w-full text-left"
+                onClick={() => openWorkoutDay(s.session_date)}
+              >
                 <div className="font-medium">{s.name ?? 'Entreno'}</div>
                 <div className="text-sm text-muted-foreground">{formatDate(s.session_date)}</div>
-              </div>
+              </button>
             </Card>
           ))}
         </div>
@@ -552,6 +737,32 @@ export function GymPage() {
             + Ejercicio
           </Button>
           <Button size="lg" className="w-full" onClick={saveTemplate}>Guardar plantilla</Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(quickAddDate)}
+        onClose={() => {
+          setQuickAddDate(null);
+          setQuickAddTemplateId('');
+        }}
+        title={quickAddDate ? `Planificar ${formatDate(quickAddDate)}` : 'Planificar'}
+      >
+        <div className="space-y-4">
+          <label className="block text-sm font-medium text-foreground">Plantilla</label>
+          <select
+            value={quickAddTemplateId}
+            onChange={(e) => setQuickAddTemplateId(e.target.value)}
+            className={selectClass}
+          >
+            <option value="">Entreno libre</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+          <Button size="lg" className="w-full" onClick={confirmQuickAdd}>
+            Añadir al horario
+          </Button>
         </div>
       </Modal>
     </div>

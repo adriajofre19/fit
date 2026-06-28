@@ -24,7 +24,7 @@ const { title = 'Mi Rutina', currentPath } = Astro.props;
   </head>
   <body class="bg-background text-foreground">
     <Nav currentPath={currentPath} client:load />
-    <div class="lg:pl-56 min-h-dvh pb-20 lg:pb-8">
+    <div class="lg:pl-56 min-h-dvh pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-8">
       <main class="mx-auto max-w-3xl px-4 py-6 lg:py-8">
         <slot />
       </main>

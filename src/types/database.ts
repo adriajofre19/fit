@@ -222,6 +222,48 @@ export interface Database {
         };
         Update: Partial<Database['public']['Tables']['cardio_sessions']['Insert']>;
       };
+      gym_day_plans: {
+        Row: {
+          id: string;
+          user_id: string;
+          plan_date: string;
+          template_id: string | null;
+          name: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          plan_date: string;
+          template_id?: string | null;
+          name: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['gym_day_plans']['Insert']>;
+      };
+      cardio_day_plans: {
+        Row: {
+          id: string;
+          user_id: string;
+          plan_date: string;
+          planned_type: 'long_run' | 'intervals' | 'yoyo_test';
+          name: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          plan_date: string;
+          planned_type: 'long_run' | 'intervals' | 'yoyo_test';
+          name: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['cardio_day_plans']['Insert']>;
+      };
       food_templates: {
         Row: {
           id: string;
@@ -272,6 +314,8 @@ export type WorkoutSession = Database['public']['Tables']['workout_sessions']['R
 export type WorkoutExercise = Database['public']['Tables']['workout_exercises']['Row'];
 export type WorkoutSet = Database['public']['Tables']['workout_sets']['Row'];
 export type CardioSession = Database['public']['Tables']['cardio_sessions']['Row'];
+export type GymDayPlan = Database['public']['Tables']['gym_day_plans']['Row'];
+export type CardioDayPlan = Database['public']['Tables']['cardio_day_plans']['Row'];
 export type FoodTemplate = Database['public']['Tables']['food_templates']['Row'];
 export type DayMealItem = Database['public']['Tables']['day_meal_items']['Row'];
 export type MealType = DayMealItem['meal_type'];
