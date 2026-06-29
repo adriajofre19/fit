@@ -1,4 +1,4 @@
-import { format, startOfWeek, addDays, parseISO } from 'date-fns';
+import { format, startOfWeek, addDays, parseISO, startOfDay } from 'date-fns';
 import { es } from 'date-fns/locale';
 
 export function todayISO(): string {
@@ -17,6 +17,20 @@ export function getWeekDays(baseDate: Date): Date[] {
 
 export function getThreeDayWindow(startDate: Date): Date[] {
   return Array.from({ length: 3 }, (_, i) => addDays(startDate, i));
+}
+
+/** En móvil solo hoy; en escritorio ventana de 3 días desde viewStart. */
+export function getScheduleVisibleDays(viewStart: Date, onlyToday: boolean): Date[] {
+  if (onlyToday) return [startOfDay(new Date())];
+  return getThreeDayWindow(viewStart);
+}
+
+export function getScheduleLoadRange(
+  viewStart: Date,
+  onlyToday: boolean,
+): { from: string; to: string } {
+  const days = getScheduleVisibleDays(viewStart, onlyToday);
+  return { from: toISODate(days[0]), to: toISODate(days[days.length - 1]) };
 }
 
 export function dayLabel(date: Date): string {

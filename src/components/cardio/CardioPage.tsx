@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { subDays } from 'date-fns';
 import { createSupabaseBrowserClient } from '../../lib/supabase/client';
-import { todayISO, formatDate, formatPace, formatDuration, getThreeDayWindow, toISODate } from '../../lib/dates';
+import { todayISO, formatDate, formatPace, formatDuration, getScheduleLoadRange } from '../../lib/dates';
+import { useIsMobile } from '../../lib/use-mobile';
 import type { PlanDragPayload } from '../../lib/schedule';
 import {
   loadingClass,
@@ -58,6 +59,7 @@ export function CardioPage() {
   const [yoyo, setYoyo] = useState({ level: '', shuttles: '' });
 
   const supabase = createSupabaseBrowserClient();
+  const isMobile = useIsMobile();
 
   const plansByDate = useMemo(() => {
     const map = new Map<string, DayPlanEntry>();
@@ -92,7 +94,7 @@ export function CardioPage() {
 
   useEffect(() => {
     loadSchedule();
-  }, [viewStart]);
+  }, [viewStart, isMobile]);
 
   useEffect(() => {
     if (tab === 'log') {
@@ -115,9 +117,7 @@ export function CardioPage() {
   }
 
   async function loadSchedule() {
-    const days = getThreeDayWindow(viewStart);
-    const from = toISODate(days[0]);
-    const to = toISODate(days[2]);
+    const { from, to } = getScheduleLoadRange(viewStart, isMobile);
 
     const [plansRes, sessionsRes] = await Promise.all([
       supabase.from('cardio_day_plans').select('*').gte('plan_date', from).lte('plan_date', to),

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { addDays, subDays } from 'date-fns';
 import type { PlanDragPayload } from '../../lib/schedule';
 import { parsePlanDragPayload } from '../../lib/schedule';
-import { dayLabel, formatDate, getThreeDayWindow, toISODate, todayISO } from '../../lib/dates';
+import { dayLabel, formatDate, getScheduleVisibleDays, toISODate, todayISO } from '../../lib/dates';
+import { useIsMobile } from '../../lib/use-mobile';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/Button';
 
@@ -36,9 +37,12 @@ export function ThreeDayPlanGrid({
   onQuickAdd,
   onOpenDay,
 }: ThreeDayPlanGridProps) {
+  const isMobile = useIsMobile();
   const [dragOverDate, setDragOverDate] = useState<string | null>(null);
-  const visibleDays = getThreeDayWindow(viewStart);
-  const rangeLabel = `${formatDate(toISODate(visibleDays[0]), 'd MMM')} – ${formatDate(toISODate(visibleDays[2]), 'd MMM yyyy')}`;
+  const visibleDays = getScheduleVisibleDays(viewStart, isMobile);
+  const rangeLabel = isMobile
+    ? formatDate(todayISO(), 'EEEE d MMM yyyy')
+    : `${formatDate(toISODate(visibleDays[0]), 'd MMM')} – ${formatDate(toISODate(visibleDays[visibleDays.length - 1]), 'd MMM yyyy')}`;
 
   function handleDragOver(e: React.DragEvent, date: string) {
     e.preventDefault();
@@ -63,17 +67,21 @@ export function ThreeDayPlanGrid({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <Button variant="outline" size="sm" onClick={() => onViewStartChange(subDays(viewStart, 3))}>
-          ← Anterior
-        </Button>
-        <span className="text-sm font-medium text-foreground text-center">{rangeLabel}</span>
-        <Button variant="outline" size="sm" onClick={() => onViewStartChange(addDays(viewStart, 3))}>
-          Siguiente →
-        </Button>
-      </div>
+      {isMobile ? (
+        <p className="text-sm font-medium text-foreground text-center capitalize">{rangeLabel}</p>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <Button variant="outline" size="sm" onClick={() => onViewStartChange(subDays(viewStart, 3))}>
+            ← Anterior
+          </Button>
+          <span className="text-sm font-medium text-foreground text-center">{rangeLabel}</span>
+          <Button variant="outline" size="sm" onClick={() => onViewStartChange(addDays(viewStart, 3))}>
+            Siguiente →
+          </Button>
+        </div>
+      )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className={cn('grid gap-4', isMobile ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-3')}>
         {visibleDays.map((day) => {
           const iso = toISODate(day);
           const isToday = iso === todayISO();

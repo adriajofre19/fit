@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { addDays, subDays } from 'date-fns';
 import { createSupabaseBrowserClient } from '../../lib/supabase/client';
-import { getThreeDayWindow, toISODate, formatDate, todayISO } from '../../lib/dates';
+import { getScheduleLoadRange, getScheduleVisibleDays, toISODate, formatDate, todayISO } from '../../lib/dates';
+import { useIsMobile } from '../../lib/use-mobile';
 import { groupMealsBySlot, slotKey, type DragPayload } from '../../lib/meals';
 import { loadingClass, pageSubtitleClass } from '../../lib/ui-classes';
 import type { DailyLog, DayMealItem, FoodTemplate, MealType } from '../../types/database';
@@ -41,13 +42,14 @@ export function DietPage({ initialMeal }: DietPageProps) {
   const [highlightMeal, setHighlightMeal] = useState<MealType | null>(null);
 
   const supabase = createSupabaseBrowserClient();
-  const visibleDays = getThreeDayWindow(viewStart);
+  const isMobile = useIsMobile();
+  const visibleDays = getScheduleVisibleDays(viewStart, isMobile);
   const mealsBySlot = groupMealsBySlot(mealItems);
   const openedInitial = useRef(false);
 
   useEffect(() => {
     loadWeek();
-  }, [viewStart]);
+  }, [viewStart, isMobile]);
 
   useEffect(() => {
     if (!loading && initialMeal && !openedInitial.current) {
@@ -67,9 +69,7 @@ export function DietPage({ initialMeal }: DietPageProps) {
 
   async function loadWeek() {
     setLoading(true);
-    const days = getThreeDayWindow(viewStart);
-    const from = toISODate(days[0]);
-    const to = toISODate(days[2]);
+    const { from, to } = getScheduleLoadRange(viewStart, isMobile);
 
     const [foodsRes, mealsRes, logsRes] = await Promise.all([
       supabase.from('food_templates').select('*').order('name'),
@@ -205,7 +205,9 @@ export function DietPage({ initialMeal }: DietPageProps) {
     await loadWeek();
   }
 
-  const rangeLabel = `${formatDate(toISODate(visibleDays[0]), 'd MMM')} – ${formatDate(toISODate(visibleDays[2]), 'd MMM yyyy')}`;
+  const rangeLabel = isMobile
+    ? formatDate(todayISO(), 'EEEE d MMM yyyy')
+    : `${formatDate(toISODate(visibleDays[0]), 'd MMM')} – ${formatDate(toISODate(visibleDays[visibleDays.length - 1]), 'd MMM yyyy')}`;
 
   return (
     <div className="space-y-6 animate-slide-up">
@@ -223,15 +225,19 @@ export function DietPage({ initialMeal }: DietPageProps) {
         </div>
       </header>
 
-      <div className="flex items-center justify-between gap-2">
-        <Button variant="outline" size="sm" onClick={() => setViewStart(subDays(viewStart, 3))}>
-          ← Anterior
-        </Button>
-        <span className="text-sm font-medium text-foreground text-center">{rangeLabel}</span>
-        <Button variant="outline" size="sm" onClick={() => setViewStart(addDays(viewStart, 3))}>
-          Siguiente →
-        </Button>
-      </div>
+      {isMobile ? (
+        <p className="text-sm font-medium text-foreground text-center capitalize">{rangeLabel}</p>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <Button variant="outline" size="sm" onClick={() => setViewStart(subDays(viewStart, 3))}>
+            ← Anterior
+          </Button>
+          <span className="text-sm font-medium text-foreground text-center">{rangeLabel}</span>
+          <Button variant="outline" size="sm" onClick={() => setViewStart(addDays(viewStart, 3))}>
+            Siguiente →
+          </Button>
+        </div>
+      )}
 
       {loading ? (
         <div className={loadingClass}>Cargando...</div>
@@ -247,7 +253,9 @@ export function DietPage({ initialMeal }: DietPageProps) {
           />
 
           <div>
-            <h2 className="text-sm font-medium text-foreground mb-3">Horario (3 días)</h2>
+            <h2 className="text-sm font-medium text-foreground mb-3">
+              {isMobile ? 'Horario de hoy' : 'Horario (3 días)'}
+            </h2>
             <WeekSchedule
               visibleDays={visibleDays}
               mealsBySlot={mealsBySlot}
